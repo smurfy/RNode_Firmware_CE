@@ -16,7 +16,7 @@
 # Version 2.0.17 of the Arduino ESP core is based on ESP-IDF v4.4.7
 ARDUINO_ESP_CORE_VER = 2.0.17
 
-V ?= 0
+V ?= 1
 VFLAG =
 ifeq "$(V)" "1"
 VFLAG =-v
@@ -45,6 +45,8 @@ prep-esp32:
 	arduino-cli lib install "XPowersLib"
 	arduino-cli lib install "Crypto"
 	arduino-cli lib install "Adafruit NeoPixel"
+	arduino-cli lib install "ArduinoJson"
+	arduino-cli lib install --git-url https://github.com/smurfy/microReticulum
 	pip install pyserial rns --upgrade --user --break-system-packages # This looks scary, but it's actually just telling pip to install packages as a user instead of trying to install them systemwide, which bypasses the "externally managed environment" error.
 
 prep-nrf:
@@ -55,8 +57,10 @@ prep-nrf:
 	arduino-cli lib install "Adafruit GFX Library"
 	arduino-cli lib install "GxEPD2"
 	arduino-cli lib install "TinyGPSPlus"
+	arduino-cli lib install "ArduinoJson"
 	arduino-cli config set library.enable_unsafe_install true
-	arduino-cli lib install --git-url https://github.com/liamcottle/esp8266-oled-ssd1306#e16cee124fe26490cb14880c679321ad8ac89c95
+	arduino-cli lib install --git-url https://github.com/liamcottle/esp8266-oled-ssd1306
+	arduino-cli lib install --git-url https://github.com/smurfy/microReticulum
 	pip install pyserial rns --upgrade --user --break-system-packages # This looks scary, but it's actually just telling pip to install packages as a user instead of trying to install them systemwide, which bypasses the "externally managed environment" error.
 	pip install adafruit-nrfutil --upgrade --user --break-system-packages # This looks scary, but it's actually just telling pip to install packages as a user instead of trying to install them systemwide, which bypasses the "externally managed environment" error.
 
@@ -144,7 +148,7 @@ firmware-genericesp32: check_bt_buffers
 	arduino-cli compile --fqbn esp32:esp32:esp32 $(COMMON_BUILD_FLAGS) --build-property "compiler.cpp.extra_flags=\"-DBOARD_MODEL=0x35\""
 
 firmware-rak4631:
-	arduino-cli compile --fqbn rakwireless:nrf52:WisCoreRAK4631Board $(COMMON_BUILD_FLAGS) --build-property "compiler.cpp.extra_flags=\"-DBOARD_MODEL=0x51\" \"-DBOARD_VARIANT=0x12\""
+	arduino-cli compile --fqbn rakwireless:nrf52:WisCoreRAK4631Board $(COMMON_BUILD_FLAGS)  --build-property "compiler.cpp.extra_flags=\"-Wall\" \"-Wno-missing-field-initializers\" \"-Wno-format\" \"-Wno-unused-parameter\" \"-fexceptions\" \"-DBOARD_MODEL=0x51\" \"-DBOARD_VARIANT=0x12\""
 
 firmware-rak4631_sx1280:
 	arduino-cli compile --fqbn rakwireless:nrf52:WisCoreRAK4631Board $(COMMON_BUILD_FLAGS) --build-property "compiler.cpp.extra_flags=\"-DBOARD_MODEL=0x51\" \"-DBOARD_VARIANT=0x14\""
