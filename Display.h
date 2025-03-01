@@ -965,8 +965,14 @@ void draw_disp_area() {
         // TODO, for some reason there is a weird artifact at the top of the screen if this line isn't here. Need to investigate.
         disp_area.fillRect(0,0,disp_area.width(),8,DISPLAY_WHITE);
 
-        // display device ID on top bar
-        disp_area.setCursor(4, 5); disp_area.print(bt_devname);
+        if (op_mode == MODE_TNC) {
+          // Indicate that this is a Transport node
+          disp_area.setCursor(2, 4);
+          disp_area.print("TTTTTTTTTT");
+        } else {
+          // display device ID on top bar
+          disp_area.setCursor(4, 5); disp_area.print(bt_devname);
+        }
 
       } else {
         if (device_signatures_ok()) {
@@ -1153,7 +1159,9 @@ void update_display(bool blank = false) {
         display.clearDisplay();
       #endif
 
-      if (recondition_display) {
+      if (display_intensity == 0 && op_mode == MODE_TNC) {
+        // basically disable display if intensity is 0
+      } else if (recondition_display) {
         disp_target_fps = 30;
         disp_update_interval = 1000/disp_target_fps;
         display_recondition();

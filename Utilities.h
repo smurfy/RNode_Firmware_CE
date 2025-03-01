@@ -90,6 +90,11 @@ uint8_t boot_vector = 0x00;
 	// TODO: Get NRF52 boot flags
 #endif
 
+#ifdef HAS_RNS
+#include <Reticulum.h>
+extern RNS::Reticulum reticulum;
+#endif
+
 #if HAS_NP == true
 	#include <Adafruit_NeoPixel.h>
 	#define NUMPIXELS 1
@@ -1458,6 +1463,11 @@ void eeprom_erase() {
 			eeprom_update(eeprom_addr(addr), 0xFF);
 		}
 	#endif
+
+	#ifdef HAS_RNS
+	    reticulum.clear_caches();
+	#endif
+
 	hard_reset();
 }
 

@@ -17,6 +17,21 @@
 #include <SPI.h>
 #include "Utilities.h"
 
+#ifdef HAS_RNS
+#include <Reticulum.h>
+#include <Transport.h>
+#include <Interface.h>
+#include <Identity.h>
+#include <Log.h>
+#include <Bytes.h>
+#include <queue>
+#ifdef RNS_USE_FS
+#include "FileSystem.h"
+#else
+#include "NoopFileSystem.h"
+#endif
+#endif
+
 #if MCU_VARIANT == MCU_ESP32
   #include <esp_task_wdt.h>
 #endif
@@ -110,6 +125,149 @@ char sbuf[128];
 
 uint8_t *packet_queue[INTERFACE_COUNT];
 
+#ifdef HAS_RNS
+class LoRaInterface : public RNS::InterfaceImpl {
+public:
+  LoRaInterface() : RNS::InterfaceImpl("LoRaInterface") {
+    _IN = true;
+    _OUT = true;
+  }
+  LoRaInterface(const char *name) : RNS::InterfaceImpl(name) {
+    _IN = true;
+    _OUT = true;
+  }
+  virtual ~LoRaInterface() {
+    _name = "deleted";
+  }
+protected:
+  virtual void send_outgoing(const RNS::Bytes& data) {
+    TRACEF("LoRaInterface.send_outgoing: (%u bytes) data: %s", data.size(), data.toHex().c_str());
+    TRACE("LoRaInterface.send_outgoing: adding packet to outgoing queue...");
+
+    if (interface < INTERFACE_COUNT) {
+      for (size_t i = 0; i < data.size(); i++) {
+        if (queue_height[interface] < CONFIG_QUEUE_MAX_LENGTH && queued_bytes[interface] < (getQueueSize(interface))) {
+          queued_bytes[interface]++;
+          packet_queue[interface][queue_cursor[interface]++] = data.data()[i];
+          if (queue_cursor[interface] == getQueueSize(interface)) queue_cursor[interface] = 0;
+        }
+      }
+
+      if (!fifo16_isfull(&packet_starts[interface]) && (queued_bytes[interface] < (getQueueSize(interface)))) {
+        uint16_t s = current_packet_start[interface];
+        int32_t e = queue_cursor[interface]-1; if (e == -1) e = (getQueueSize(interface))-1;
+        uint16_t l;
+
+        if (s != e) {
+          l = (s < e) ? e - s + 1: (getQueueSize(interface)) - s + e + 1;
+        } else {
+          l = 1;
+        }
+
+        if (l >= MIN_L) {
+          queue_height[interface]++;
+
+          fifo16_push(&packet_starts[interface], s);
+          fifo16_push(&packet_lengths[interface], l);
+          current_packet_start[interface] = queue_cursor[interface];
+        }
+      }
+    }
+    InterfaceImpl::send_outgoing(data);
+  }
+};
+
+// AnnounceHandler
+//class RNSAnnounceHandler : public RNS::AnnounceHandler {
+//public:
+//  RNSAnnounceHandler(const char* aspect_filter = nullptr) : AnnounceHandler(aspect_filter) {}
+//  virtual ~RNSAnnounceHandler() {}
+//  virtual void received_announce(const RNS::Bytes& destination_hash, const RNS::Identity& announced_identity, const RNS::Bytes& app_data) {
+//    INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+//    INFO("RNSAnnounceHandler: destination hash: " + destination_hash.toHex());
+//    if (announced_identity) {
+//      INFO("RNSAnnounceHandler: announced identity hash: " + announced_identity.hash().toHex());
+//      INFO("RNSAnnounceHandler: announced identity app data: " + announced_identity.app_data().toHex());
+//    }
+//    if (app_data) {
+//      INFO("RNSAnnounceHandler: app data text: \"" + app_data.toString() + "\"");
+//    }
+//    INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+//  }
+//};
+
+void onRNSPacket(const RNS::Bytes& data, const RNS::Packet& packet) {
+  INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+  INFO("onRNSPacket: data: " + data.toHex());
+  INFO("onRNSPacket: text: \"" + data.toString() + "\"");
+  //TRACE("onPacket: " + packet.debugString());
+  INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+}
+
+void onRNSLog(const char* msg, RNS::LogLevel level) {
+  String line = RNS::getTimeString() + String(" [") + RNS::getLevelName(level) + "] " + msg + "\n";
+  Serial.print(line);
+  Serial.flush();
+}
+
+void onRNSRecievePacket(const RNS::Bytes& raw, const RNS::Interface& interface) {
+  INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+  INFO("onRNSRecievePacket: data: " + raw.toHex());
+  INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+}
+
+void onRNSTransmitPacket(const RNS::Bytes& raw, const RNS::Interface& interface) {
+  INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+  INFO("onRNSTransmitPacket: data: " + raw.toHex());
+  INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+}
+
+RNS::Reticulum reticulum(RNS::Type::NONE);
+RNS::Interface lora_interface(RNS::Type::NONE);
+RNS::FileSystem filesystem(RNS::Type::NONE);
+RNS::Identity identity({RNS::Type::NONE});
+RNS::Destination destination({RNS::Type::NONE});
+
+double last_rns_announce = 0;
+extern char bt_devname[11];
+
+void rnsAnnounce() {
+  if (destination) {
+    INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    INFO("rnsAnnounce: announcing myself: " + destination.hash().toHex());
+    if (battery_ready && battery_installed) {
+      char nodename[20];
+      sprintf(nodename, "%s (%.0f%%)", bt_devname, battery_percent);
+	  destination.announce(nodename);
+    } else {
+      destination.announce(bt_devname);
+    }
+    INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+  } else {
+    INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    INFO("rnsAnnounce: can't announce myself");
+    INFO("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+  }
+}
+
+void rnsToLoraInterface(int index) {
+  // Inject data received to reticulum lora interface
+  RNS::Bytes data(MTU);
+  for (uint16_t i = 0; i < read_len[index]; i++) {
+    #if MCU_VARIANT == MCU_NRF52
+      portENTER_CRITICAL();
+      uint8_t byte = pbuf[i];
+      portEXIT_CRITICAL();
+    #else
+      uint8_t byte = pbuf[i];
+    #endif
+    data << byte;
+  }
+  lora_interface.handle_incoming(data);
+}
+
+#endif
+
 void setup() {
   #if MCU_VARIANT == MCU_ESP32
     boot_seq();
@@ -167,6 +325,17 @@ void setup() {
   fifo_init(&serialFIFO, serialBuffer, CONFIG_UART_BUFFER_SIZE);
 
   Serial.begin(serial_baudrate);
+
+#ifdef HAS_RNS
+  // We need to wait a bit before serial is ready
+  while (!Serial) {
+    if (millis() > 2000) {
+      break;
+    }
+    delay(10);
+  }
+  delay(2000);
+#endif
 
 // Configure WDT
 #if MCU_VARIANT == MCU_ESP32
@@ -424,9 +593,71 @@ void setup() {
         }
     }
 
-
   // Validate board health, EEPROM and config
   validate_status();
+
+#ifdef HAS_RNS
+
+#ifdef RNS_USE_FS
+  filesystem = new FileSystem();
+  ((FileSystem*)filesystem.get())->init();
+#else
+  filesystem = new NoopFileSystem();
+  ((NoopFileSystem*)filesystem.get())->init();
+#endif
+
+  RNS::Utilities::OS::register_filesystem(filesystem);
+
+//  // Setting test identity, to have repeatable destination address for testing
+//  RNS::Bytes transport_prv_bytes;
+//  transport_prv_bytes.assignHex("CAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFECAFE");
+//  RNS::Identity transport_identity(false);
+//  transport_identity.load_private_key(transport_prv_bytes);
+//  RNS::Transport::identity(transport_identity);
+//  // End Setting test identity
+
+  // Debug stuff
+  RNS::setLogCallback(&onRNSLog);
+  RNS::Transport::set_receive_packet_callback(onRNSRecievePacket);
+  RNS::Transport::set_transmit_packet_callback(onRNSTransmitPacket);
+  RNS::loglevel(RNS::LOG_TRACE);
+
+  // Starting Lora interface used to bridge rns and reticulum
+  lora_interface = new LoRaInterface();
+  lora_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
+  RNS::Transport::register_interface(lora_interface);
+
+  // Initialize and start reticulum itself
+  reticulum = RNS::Reticulum();
+  reticulum.transport_enabled(op_mode == MODE_TNC);
+  reticulum.probe_destination_enabled(true);
+  reticulum.start();
+
+  // We are using lxmf.delivery so our announced name will show up in clients and pinging us will work
+  destination = RNS::Destination(RNS::Transport::identity(), RNS::Type::Destination::IN, RNS::Type::Destination::SINGLE, "lxmf", "delivery");
+  destination.set_packet_callback(onRNSPacket);
+  destination.set_proof_strategy(RNS::Type::Destination::PROVE_ALL);
+
+  // If we want to handle announcements in the future
+//  RNS::HAnnounceHandler announce_handler(new RNSAnnounceHandler());
+//  RNS::Transport::register_announce_handler(announce_handler);
+
+  HEAD("RNS is READY!", RNS::LOG_TRACE);
+  if (op_mode == MODE_TNC) {
+    HEAD("RNS transport mode is ENABLED", RNS::LOG_TRACE);
+    TRACE(std::string("Frequency: " + std::to_string(selected_radio->getFrequency())) + " Hz");
+    TRACE(std::string("Bandwidth: " + std::to_string(selected_radio->getSignalBandwidth())) + " Hz");
+    TRACE(std::string("TX Power: " + std::to_string(selected_radio->getTxPower())) + " dBm");
+    TRACE(std::string("Spreading Factor: " + std::to_string(selected_radio->getSpreadingFactor())));
+    TRACE(std::string("Coding Rate: " + std::to_string(selected_radio->getCodingRate4())));
+
+    rnsAnnounce();
+  }
+  else {
+    HEAD("RNS transport mode is DISABLED", RNS::LOG_INFO);
+    HEAD("Configure TNC mode with radio configuration to enable RNS transport", RNS::LOG_INFO);
+  }
+#endif
 }
 
 void lora_receive(RadioInterface* radio) {
@@ -1422,6 +1653,15 @@ void validate_status() {
               }
             #endif
           }
+
+          if (hw_ready && eeprom_have_conf()) {
+            op_mode = MODE_TNC;
+            if (interface < INTERFACE_COUNT) {
+              eeprom_conf_load(interface_obj[interface]);
+              startRadio(interface_obj[interface]);
+            }
+          }
+
         } else {
           hw_ready = false;
           Serial.write("Invalid EEPROM checksum\r\n");
@@ -1475,7 +1715,7 @@ void tx_queue_handler(RadioInterface* radio) {
     if (radio->getDifsWaitStart() == 0) {                                                  // DIFS wait not yet started
       if (medium_free(radio)) { radio->setDifsWaitStart(millis()); return; }                  // Set DIFS wait start time
       else               { return; } }                                            // Medium not yet free, continue waiting
-    
+
     else {                                                                        // We are waiting for DIFS or CW to pass
       if (!medium_free(radio)) { radio->setDifsWaitStart(0); radio->setCWWaitStart(0); return; }   // Medium became occupied while in DIFS wait, restart waiting when free again
       else {                                                                      // Medium is free, so continue waiting
@@ -1488,16 +1728,29 @@ void tx_queue_handler(RadioInterface* radio) {
             else {                                                                // Wait time has passed, flush the queue
               if (!radio->getLimitRate()) { flush_queue(radio); } else { pop_queue(radio); }
               radio->resetCWWaitPassed(); radio->setCW(-1); radio->setDifsWaitStart(0); }
+            }
           }
         }
       }
-    }
   }
 }
 
 void work_while_waiting() { loop(); }
 
 void loop() {
+
+#ifdef HAS_RNS
+  if (reticulum && op_mode == MODE_TNC) {
+    reticulum.loop();
+
+    // We announce ourselfs, every 15 minutes
+    if ((RNS::Utilities::OS::time() - last_rns_announce) > 900) {
+      rnsAnnounce();
+      last_rns_announce = RNS::Utilities::OS::time();
+    }
+  }
+#endif
+
     #if MCU_VARIANT == MCU_ESP32
       modem_packet_t *modem_packet = NULL;
       if(modem_packet_queue && xQueueReceive(modem_packet_queue, &modem_packet, 0) == pdTRUE && modem_packet) {
@@ -1509,6 +1762,9 @@ void loop() {
         free(modem_packet);
         modem_packet = NULL;
 
+#ifdef HAS_RNS
+        rnsToLoraInterface(packet_interface);
+#endif
         kiss_indicate_stat_rssi(interface_obj[packet_interface]);
         kiss_indicate_stat_snr(interface_obj[packet_interface]);
         kiss_write_packet(packet_interface);
@@ -1525,6 +1781,9 @@ void loop() {
         free(modem_packet);
         modem_packet = NULL;
 
+#ifdef HAS_RNS
+        rnsToLoraInterface(packet_interface);
+#endif
         kiss_indicate_stat_rssi(interface_obj[packet_interface]);
         kiss_indicate_stat_snr(interface_obj[packet_interface]);
         kiss_write_packet(packet_interface);
