@@ -17,6 +17,13 @@
 #include <SPI.h>
 #include "Utilities.h"
 
+#if MCU_VARIANT == MCU_ESP32
+  #include <esp_task_wdt.h>
+#endif
+
+// WDT timeout
+#define WDT_TIMEOUT 60  // seconds
+
 #if MCU_VARIANT == MCU_NRF52
   #if BOARD_MODEL == BOARD_RAK4631 || BOARD_MODEL == BOARD_OPENCOM_XL
       #define INTERFACE_SPI
@@ -160,6 +167,17 @@ void setup() {
   fifo_init(&serialFIFO, serialBuffer, CONFIG_UART_BUFFER_SIZE);
 
   Serial.begin(serial_baudrate);
+
+// Configure WDT
+#if MCU_VARIANT == MCU_ESP32
+  esp_task_wdt_init(WDT_TIMEOUT, true); // enable panic so ESP32 restarts
+  esp_task_wdt_add(NULL);               // add current thread to WDT watch
+#elif MCU_VARIANT == MCU_NRF52
+  NRF_WDT->CONFIG         = 0x01;           // Configure WDT to run when CPU is asleep
+  NRF_WDT->CRV            = WDT_TIMEOUT * 32768 + 1; // set timeout
+  NRF_WDT->RREN           = 0x01;           // Enable the RR[0] reload register
+  NRF_WDT->TASKS_START    = 1;              // Start WDT
+#endif
 
   #if HAS_NP
     led_init();
@@ -1613,6 +1631,13 @@ void loop() {
       kiss_indicate_error(ERROR_MEMORY_LOW); memory_low = false;
     #endif
   }
+
+  // Feed WDT
+#if MCU_VARIANT == MCU_ESP32
+  esp_task_wdt_reset();
+#elif MCU_VARIANT == MCU_NRF52
+  NRF_WDT->RR[0] = WDT_RR_RR_Reload;
+#endif
 }
 
 void process_serial() {
